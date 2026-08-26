@@ -6,6 +6,7 @@ import { motion } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { Map, AdvancedMarker, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import { cn } from '../lib/utils';
+import { requestNativeAudioPermission } from '../utils/audioPermissions';
 
 interface GPSTabProps {
   isRecording: boolean;
@@ -277,6 +278,7 @@ export default function GPSTab({ isRecording, trips, navigation, setNavigation, 
     setMicError(null);
 
     try {
+      await requestNativeAudioPermission();
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach(track => track.stop());

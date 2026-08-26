@@ -20,6 +20,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vis.gl/react-google-maps": "^1.9.0",
     "@vitejs/plugin-react": "^5.0.4",
+    "capacitor-voice-recorder": "^7.0.6",
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",

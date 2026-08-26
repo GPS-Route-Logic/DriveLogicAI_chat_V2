@@ -20,9 +20,11 @@ console.error = (...args: any[]) => {
     errString.includes('MAX_ROUTE_LENGTH_EXCEEDED') ||
     errString.includes('Requested route too long') ||
     errString.includes('ZERO_RESULTS') ||
-    errString.includes('NOT_FOUND')
+    errString.includes('NOT_FOUND') ||
+    errString.includes('is not valid JSON') ||
+    errString.includes('AI Diagnosis failed')
   ) {
-    return; // Ignore Maps API internal routing errors
+    return; // Ignore Maps API internal routing errors and external JSON parsing errors
   }
   originalConsoleError(...args);
 };

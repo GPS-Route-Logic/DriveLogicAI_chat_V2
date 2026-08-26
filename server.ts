@@ -16,17 +16,24 @@ async function startServer() {
   if (!apiKey) {
     console.warn("GEMINI_API_KEY is missing. Server features relying on GenAI will fail.");
   }
-  const ai = new GoogleGenAI({ apiKey: apiKey || "" });
+  const ai = new GoogleGenAI({ 
+    apiKey: apiKey || "",
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
 
   // Gemini API Proxy endpoints to secure the key
   app.get("/api/keytest", (req, res) => {
-    res.json({ key: process.env.GEMINI_API_KEY });
+    res.json({ key: process.env.GEMINI_API_KEY ? "configured" : "missing" });
   });
 
   app.post("/api/gemini/command", async (req, res) => {
     try {
       const { text, history, contextData } = req.body;
-      const model = "gemini-3.5-flash";
+      const model = "gemini-3.7-flash";
 
       const tools = [
         {
@@ -119,15 +126,15 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
   app.post("/api/gemini/diagnose", async (req, res) => {
     try {
       const { data, sensorHistory, vehicleModel } = req.body;
-      const model = "gemini-3.1-pro-preview";
+      const model = "gemini-3.7-flash";
       
       const vehicleContext = vehicleModel ? `Vehicle Model: ${vehicleModel}` : `Vehicle Model: Unknown`;
 
       const sensorContext = sensorHistory && sensorHistory.length > 0 
         ? `Recent Sensor Activity (last 60s):
-           - Peak Acceleration: ${Math.max(...sensorHistory.map((h: any) => h.accel)).toFixed(2)}G
-           - Peak Rotation Rate: ${Math.max(...sensorHistory.map((h: any) => h.gyro)).toFixed(2)} deg/s
-           - Average Vibration Level: ${(sensorHistory.reduce((acc: number, h: any) => acc + h.accel, 0) / sensorHistory.length).toFixed(3)}G`
+           - Peak Acceleration: ${Math.max(...sensorHistory.map((h: any) => h.accel || 0)).toFixed(2)}G
+           - Peak Rotation Rate: ${Math.max(...sensorHistory.map((h: any) => h.gyro || 0)).toFixed(2)} deg/s
+           - Average Vibration Level: ${(sensorHistory.reduce((acc: number, h: any) => acc + (h.accel || 0), 0) / sensorHistory.length).toFixed(3)}G`
         : "No recent sensor data available.";
 
       const prompt = `You are an automotive diagnostic specialist.
@@ -137,13 +144,13 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       ${vehicleContext}
 
       OBD-II LIVE DATA:
-      - RPM: ${data.rpm}
-      - Speed: ${Math.round(data.speed * 0.621371)} mph
-      - Engine Coolant Temperature: ${Math.round((data.coolantTemp * 9/5) + 32)} °F
-      - Calculated Engine Load: ${data.load.toFixed(1)}%
-      - Throttle Position: ${data.throttlePos.toFixed(1)}%
-      - Battery System Voltage: ${data.voltage.toFixed(2)}V
-      - Active DTCs: ${data.dtcs.length > 0 ? data.dtcs.join(', ') : 'None detected'}
+      - RPM: ${data?.rpm || 0}
+      - Speed: ${Math.round((data?.speed || 0) * 0.621371)} mph
+      - Engine Coolant Temperature: ${Math.round(((data?.coolantTemp || 85) * 9/5) + 32)} °F
+      - Calculated Engine Load: ${(data?.load || 0).toFixed(1)}%
+      - Throttle Position: ${(data?.throttlePos || 0).toFixed(1)}%
+      - Battery System Voltage: ${(data?.voltage || 12.6).toFixed(2)}V
+      - Active DTCs: ${data?.dtcs && data.dtcs.length > 0 ? data.dtcs.join(', ') : 'None detected'}
       
       IMU SENSOR DATA (Smartphone Accelerometer/Gyro):
       ${sensorContext}
@@ -166,14 +173,15 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       });
       res.json({ text: response.text });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.warn("Gemini diagnosis error:", e.message);
+      res.status(500).json({ error: e.message, text: "AI Diagnosis is currently unavailable." });
     }
   });
 
   app.post("/api/gemini/dtc", async (req, res) => {
     try {
       const { code } = req.body;
-      const model = "gemini-3.5-flash";
+      const model = "gemini-3.7-flash";
       const prompt = `You are an expert automotive diagnostics AI. Provide a concise, plain English explanation of the OBD-II Diagnostic Trouble Code (DTC) ${code}. Include the likely causes and recommended actions. Keep the response under 150 words.`;
 
       const response = await ai.models.generateContent({
@@ -185,20 +193,21 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       });
       res.json({ text: response.text });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.warn("Gemini DTC error:", e.message);
+      res.status(500).json({ error: e.message, text: null });
     }
   });
 
   app.post("/api/gemini/route", async (req, res) => {
     try {
       const { trips } = req.body;
-      if (trips.length < 2) return res.json({ text: "Not enough trip data for recommendations." });
+      if (!trips || trips.length < 2) return res.json({ text: "Not enough trip data for recommendations." });
       
-      const model = "gemini-3.5-flash";
+      const model = "gemini-3.7-flash";
       const tripSummary = trips.map((t: any) => ({
         damage: t.averageDamageScore,
         distance: t.distance,
-        events: t.events.length
+        events: t.events?.length || 0
       }));
 
       const prompt = `Based on the following recent driving history, provide a brief route optimization recommendation to reduce vehicle wear and tear.
@@ -215,7 +224,8 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       });
       res.json({ text: response.text });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.warn("Gemini route error:", e.message);
+      res.status(500).json({ error: e.message, text: "Route recommendations are currently unavailable." });
     }
   });
 

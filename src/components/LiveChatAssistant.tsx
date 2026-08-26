@@ -3,6 +3,7 @@ import { Mic, X, Loader2, Sparkles, AlertTriangle, Headphones, User, Bot, Square
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { pcmToBase64, playAudioChunk, resetAudioPlayback } from '../lib/audioUtils';
+import { requestNativeAudioPermission } from '../utils/audioPermissions';
 
 export interface LiveChatAssistantHandle {
   toggleMic: () => void;
@@ -307,6 +308,7 @@ const LiveChatAssistant = forwardRef<LiveChatAssistantHandle, any>(({
       outputAnalyser.connect(outputAudioCtx.destination);
       outputAnalyserRef.current = outputAnalyser;
 
+      await requestNativeAudioPermission();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       
