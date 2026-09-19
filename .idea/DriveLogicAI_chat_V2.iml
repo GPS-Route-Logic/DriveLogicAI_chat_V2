@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" LANGUAGE_LEVEL="JDK_23">
+    <output url="file://$MODULE_DIR$/out/production/DriveLogicAI_chat_V2" />
+    <output-test url="file://$MODULE_DIR$/out/test/DriveLogicAI_chat_V2" />
+    <exclude-output />
+    <annotation-paths>
+      <root url="file://$MODULE_DIR$" />
+    </annotation-paths>
+    <javadoc-paths>
+      <root url="file://$MODULE_DIR$" />
+    </javadoc-paths>
+    <content url="file://$MODULE_DIR$" />
+    <orderEntry type="jdk" jdkName="temurin-25" jdkType="JavaSDK" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
