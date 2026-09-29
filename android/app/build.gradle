@@ -66,6 +66,9 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     
+    // Google Mobile Ads SDK (AdMob)
+    implementation 'com.google.android.gms:play-services-ads:24.4.0'
+    
     // Capacitor core dependency
     implementation project(':capacitor-android')
     
