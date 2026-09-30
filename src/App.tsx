@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Gauge, Map as MapIcon, History, Play, Square, BrainCircuit, AlertTriangle, ChevronRight, Settings, X, Key, Wrench, AlertCircle } from 'lucide-react';
+import { Activity, Gauge, Map as MapIcon, History, Play, Square, BrainCircuit, AlertTriangle, ChevronRight, Settings, X, Key, Wrench, AlertCircle, CreditCard } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { OBDData, Trip, DamagePoint, TripEvent, SensorPoint, NavigationState, PostCommandActions } from './types';
 import { cn } from './lib/utils';
@@ -13,7 +13,9 @@ import DamageLogTab from './components/DamageLogTab';
 import GPSTab from './components/GPSTab';
 import FloatingMap from './components/FloatingMap';
 import LiveChatAssistant, { LiveChatAssistantHandle } from './components/LiveChatAssistant';
+import { AIChatbot } from './components/AIChatbot';
 import MaintenanceTab from './components/MaintenanceTab';
+import SubscriptionTab from './components/SubscriptionTab';
 import { runAIDiagnosis } from './services/geminiService';
 import { MaintenanceTask } from './types';
 import { APIProvider } from '@vis.gl/react-google-maps';
@@ -26,11 +28,35 @@ import { Cloud, CloudUpload, HardDrive, RotateCw, Trash2, FolderSync, Mic } from
 
 const DEFAULT_MAPS_KEY = "AIzaSyDX-VRPvfH-AzKUwmtu1DQ9_vzDn4y2f9E";
 
+const fetchWeather = async (lat: number, lng: number): Promise<string> => {
+  try {
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current_weather=true&temperature_unit=fahrenheit`);
+    const data = await res.json();
+    if (data.current_weather) {
+      const { temperature, weathercode } = data.current_weather;
+      const getWeatherDescription = (code: number) => {
+        if (code === 0) return 'Clear';
+        if (code <= 3) return 'Partly Cloudy';
+        if (code <= 49) return 'Fog';
+        if (code <= 69) return 'Rain';
+        if (code <= 79) return 'Snow';
+        if (code <= 99) return 'Thunderstorm';
+        return 'Unknown';
+      };
+      return `${Math.round(temperature)}\u00b0F, ${getWeatherDescription(weathercode)}`;
+    }
+  } catch (err) {
+    console.error("Failed to fetch weather", err);
+  }
+  return 'Weather unavailable';
+};
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const chatAssistantRef = useRef<LiveChatAssistantHandle>(null);
-  const [activeTab, setActiveTab] = useState<'obd' | 'damage' | 'gps' | 'maintenance'>('obd');
+  const [isChatbotOpen, setIsChatbotOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'obd' | 'damage' | 'gps' | 'maintenance' | 'subscription'>('obd');
   const [obdData, setObdData] = useState<OBDData>({
     rpm: 0,
     speed: 0,
@@ -512,6 +538,7 @@ export default function App() {
     { id: 'damage', label: 'Damage Log', icon: Activity },
     { id: 'gps', label: 'GPS Routes', icon: MapIcon },
     { id: 'maintenance', label: 'Maintenance', icon: Wrench },
+    { id: 'subscription', label: 'Subscription', icon: CreditCard },
   ] as const;
 
   // Real Sensor Collection (Accel & Gyro)
@@ -1215,12 +1242,23 @@ export default function App() {
                 }}
               />
             )}
+            {activeTab === 'subscription' && (
+               <SubscriptionTab />
+            )}
           </motion.div>
         </AnimatePresence>
       </main>
 
       <FloatingMap navigation={navigation} setNavigation={setNavigation} mapsApiKey={apiKeys.maps} isLoaded={isLoaded} />
-      
+
+      {isChatbotOpen && (
+        <AIChatbot
+          isOpen={isChatbotOpen}
+          onClose={() => setIsChatbotOpen(false)}
+          userId={user?.uid}
+        />
+      )}
+
       <LiveChatAssistant 
         ref={chatAssistantRef}
         speed={obdData.speed}

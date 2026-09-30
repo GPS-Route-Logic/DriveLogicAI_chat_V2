@@ -9,15 +9,15 @@ android {
 
     defaultConfig {
         // Uniquely identifies the app on the device and in the Google Play Store
-        applicationId "com.DriveLogicAI"
+        applicationId "com.DriveLogicAI_chat"
         // Minimum API level required to run the app
         minSdkVersion rootProject.ext.minSdkVersion
         // Target API level for which the app is designed and tested
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Internal version number used for app updates
-        versionCode 1
+        versionCode 34
         // Public version string shown to users
-        versionName "1.0"
+        versionName "2.33"
         
         // Specifies the runner used for instrumented tests
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -31,10 +31,10 @@ android {
     
     signingConfigs {
         release {
-            storeFile file("release.keystore")
-            storePassword "android"
-            keyAlias "release_key"
-            keyPassword "android"
+            storeFile file("release-key.jks")
+            storePassword "MakersMarka7a8\$\$\$"
+            keyAlias "drivelogicai_key"
+            keyPassword "MakersMarka7a8\$\$\$"
         }
     }
     
