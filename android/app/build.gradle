@@ -31,10 +31,12 @@ android {
     
     signingConfigs {
         release {
-            storeFile file("release-key.jks")
-            storePassword "MakersMarka7a8\$\$\$"
-            keyAlias "drivelogicai_key"
-            keyPassword "MakersMarka7a8\$\$\$"
+            if (file("release-key.jks").exists()) {
+                storeFile file("release-key.jks")
+                storePassword "MakersMarka7a8\$\$\$"
+                keyAlias "drivelogicai_key"
+                keyPassword "MakersMarka7a8\$\$\$"
+            }
         }
     }
     
@@ -44,8 +46,10 @@ android {
             minifyEnabled false
             // Defines the ProGuard rule files to be applied if minifyEnabled is set to true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            // Apply the release signing configuration
-            signingConfig signingConfigs.release
+            // Apply the release signing configuration if configured
+            if (file("release-key.jks").exists()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

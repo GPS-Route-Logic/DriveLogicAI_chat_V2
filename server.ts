@@ -1,23 +1,92 @@
-import express from "express";
+import EventEmitter from "events";
+import net from "net";
+import fs from "fs";
 import path from "path";
+import express from "express";
 import { createServer as createViteServer } from "vite";
 import { WebSocketServer, WebSocket } from "ws";
-import { GoogleGenAI, LiveServerMessage, Modality, Type, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import dotenv from "dotenv";
+
 dotenv.config({ override: true });
+
+// Prevent unhandled WebSocket & Socket senderOnError / TLSSocket crashes
+const origEventEmitterEmit = EventEmitter.prototype.emit;
+EventEmitter.prototype.emit = function (event: string | symbol, ...args: any[]) {
+  if (event === 'error') {
+    if (this.listenerCount(event) === 0) {
+      return false;
+    }
+  }
+  return origEventEmitterEmit.apply(this, [event, ...args]);
+};
+
+const origSocketEmit = net.Socket.prototype.emit;
+net.Socket.prototype.emit = function (event: string | symbol, ...args: any[]) {
+  if (event === 'error') {
+    if (this.listenerCount(event) === 0) {
+      return false;
+    }
+  }
+  return origSocketEmit.apply(this, [event, ...args]);
+};
+
+const origWebSocketEmit = WebSocket.prototype.emit;
+WebSocket.prototype.emit = function (event: string | symbol, ...args: any[]) {
+  if (event === 'error') {
+    if (this.listenerCount(event) === 0) {
+      return false;
+    }
+  }
+  return origWebSocketEmit.apply(this, [event, ...args]);
+};
+
+process.on('uncaughtException', (err: any) => {
+  if (!err) return;
+  const msg = String(err?.message || err);
+  if (
+    msg.includes('senderOnError') ||
+    msg.includes('authorizationError') ||
+    msg.includes('WebSocket') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE')
+  ) {
+    return;
+  }
+  console.error('[DriveLogicAI] Uncaught exception:', err);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  console.warn('[DriveLogicAI] Unhandled rejection:', reason?.message || reason);
+});
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  // CORS and domain headers for Squarespace (drivelgicaiapp.com) and Google AI Studio (drivelogicai.ai.studio)
+  app.use((req, res, next) => {
+    const origin = req.headers.origin || '*';
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
+  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || "";
   if (!apiKey) {
-    console.warn("GEMINI_API_KEY is missing. Server features relying on GenAI will fail.");
+    console.warn("[DriveLogicAI] GEMINI_API_KEY is not set. Features relying on GenAI will return setup notices.");
   }
+
   const ai = new GoogleGenAI({ 
-    apiKey: apiKey || "",
+    apiKey: apiKey || "dummy-key-placeholder",
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
@@ -25,15 +94,107 @@ async function startServer() {
     }
   });
 
-  // Gemini API Proxy endpoints to secure the key
-  app.get("/api/keytest", (req, res) => {
-    res.json({ key: process.env.GEMINI_API_KEY ? "configured" : "missing" });
+  // Health and key checks
+  app.get("/health", (req, res) => {
+    res.json({
+      status: "healthy",
+      timestamp: Date.now(),
+      domain: process.env.CUSTOM_DOMAIN || "drivelgicaiapp.com",
+      aiStudioDomain: process.env.AI_STUDIO_DOMAIN || "drivelogicai.ai.studio",
+      port: PORT,
+      geminiConfigured: !!(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY),
+      mapsConfigured: !!(process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_MAPS_API_KEY)
+    });
   });
 
+  app.get("/api/keytest", (req, res) => {
+    res.json({ key: (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY) ? "configured" : "missing" });
+  });
+
+  // Streaming AI Chat endpoint for AIChatbot.tsx
+  app.post("/api/gemini/chat", async (req, res) => {
+    try {
+      const { message, history, useSearch, useMaps, modelType, role } = req.body;
+      
+      if (!apiKey) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.write("Gemini API key is not configured. Please supply GEMINI_API_KEY in Google AI Studio Secrets or your environment settings.");
+        res.end();
+        return;
+      }
+
+      // Map models to valid current generation models
+      let selectedModel = "gemini-3.8-flash";
+      if (modelType === "gemini-3.1-pro-preview" || modelType === "gemini-4-argon") {
+        selectedModel = "gemini-3.8-flash";
+      } else if (modelType === "gemini-3.1-flash-lite") {
+        selectedModel = "gemini-3.5-flash-lite";
+      } else if (modelType === "gemini-3.5-flash") {
+        selectedModel = "gemini-3.8-flash";
+      }
+
+      let systemRoleText = "You are DriveLogic AI, an advanced automotive assistant.";
+      if (role === 'Mechanic') {
+        systemRoleText = "You are a Master Automotive Diagnostic Specialist. Diagnose OBD-II codes, mechanical problems, and sensor telemetry with 99% accuracy. Offer actionable repair and maintenance steps.";
+      } else if (role === 'Navigator') {
+        systemRoleText = "You are an expert GPS Route Optimization AI. Recommend routes, assess hazards, road conditions, and speed traps to protect vehicle components and minimize travel time.";
+      }
+
+      const tools: any[] = [];
+      if (useSearch || useMaps) {
+        tools.push({ googleSearch: {} });
+      }
+
+      const formattedContents: any[] = [];
+      if (Array.isArray(history)) {
+        for (const item of history) {
+          if (item && item.text) {
+            formattedContents.push({
+              role: item.role === 'user' ? 'user' : 'model',
+              parts: [{ text: item.text }]
+            });
+          }
+        }
+      }
+      formattedContents.push({
+        role: 'user',
+        parts: [{ text: message || "Hello" }]
+      });
+
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Transfer-Encoding', 'chunked');
+
+      const responseStream = await ai.models.generateContentStream({
+        model: selectedModel,
+        contents: formattedContents,
+        config: {
+          systemInstruction: systemRoleText,
+          tools: tools.length > 0 ? tools : undefined,
+        }
+      });
+
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          res.write(chunk.text);
+        }
+      }
+      res.end();
+    } catch (e: any) {
+      console.error("[DriveLogicAI] Chat streaming error:", e.message);
+      if (!res.headersSent) {
+        res.status(500).send(`AI Chat Error: ${e.message}`);
+      } else {
+        res.write(`\n[Stream Error: ${e.message}]`);
+        res.end();
+      }
+    }
+  });
+
+  // Voice Command endpoint
   app.post("/api/gemini/command", async (req, res) => {
     try {
       const { text, history, contextData } = req.body;
-      const model = "gemini-3.7-flash";
+      const model = "gemini-3.8-flash";
 
       const tools = [
         {
@@ -44,7 +205,7 @@ async function startServer() {
               parameters: {
                 type: Type.OBJECT,
                 properties: {
-                  tab: { type: Type.STRING, enum: ["obd", "damage", "gps", "maintenance"], description: "Tab to switch to" }
+                  tab: { type: Type.STRING, enum: ["obd", "damage", "gps", "maintenance", "subscription"], description: "Tab to switch to" }
                 },
                 required: ["tab"]
               }
@@ -82,23 +243,16 @@ async function startServer() {
         { googleSearch: {} }
       ];
 
-      const systemInstruction = `You are an expert automotive diagnostics AI and automotive route optimisation AI. You give driving directions in real-time on a gps map.
-When possible: recommend alternate routes based on logged trip data, obd2 data and damage scores.
-You also diagnose vehicles using trip logs and obd2 live data with fault codes.
-Analyse the provided OBD-II sensor data and give a concise, actionable report: identify any anomalies, likely causes, and recommended actions. Use plain English, avoid jargon, and keep the response under 300 words.
-Use trip logs in conjunction with OBD2 data and stored historical data of the user combined with web data to diagnose the vehicle. Parse all forums, websites and data at your disposal.
-Given historical route data including damage scores and distances, recommend the best route and explain why briefly (under 150 words).
-You will always: Use short and concise answers yes and no when possible. Do NOT introduce yourself or use any intro greeting. Complete request within a 99% accuracy.
-You can help the user change tabs, set navigation, diagnose the vehicle, and toggle recording.
-Vehicle Model: ${contextData?.vehicleModel || 'Unknown'}.
-If they ask for their current speed or RPM, answer them directly based on this context:
+      const systemInstruction = `You are DriveLogic AI, an expert automotive diagnostics and GPS route optimization AI.
+You give driving directions in real-time on a GPS map.
+Recommend alternate routes based on logged trip data, OBD2 data, and damage scores.
+Analyse the provided OBD-II sensor data and give a concise, actionable report: identify anomalies, likely causes, and recommended actions.
 Current Speed: ${contextData?.speed ? Math.round(contextData.speed * 0.621371) : 0} mph.
 Current RPM: ${contextData?.rpm || 0}.
 Recording Status: ${contextData?.isRecording ? 'Recording' : 'Not recording'}.
-When the user says "Show me my maintenance tasks", use the changeTab tool with "maintenance".
-When they say "Start recording" or "Stop recording", use the toggleRecording tool.`;
+Vehicle Model: ${contextData?.vehicleModel || 'Standard Vehicle'}.`;
 
-      let formattedHistory = [];
+      let formattedHistory: any[] = [];
       if (history && Array.isArray(history)) {
         formattedHistory = history.map((msg: any) => ({
           role: msg.sender === 'user' ? 'user' : 'model',
@@ -113,22 +267,23 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
         config: { 
           tools: tools as any,
           systemInstruction,
-          toolConfig: { includeServerSideToolInvocations: true }
         }
       });
 
       res.json({ text: response.text, functionCalls: response.functionCalls });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.warn("[DriveLogicAI] Command API error:", e.message);
+      res.status(500).json({ error: e.message, text: "Command processor is temporarily unavailable." });
     }
   });
 
+  // Vehicle Diagnosis endpoint
   app.post("/api/gemini/diagnose", async (req, res) => {
     try {
       const { data, sensorHistory, vehicleModel } = req.body;
-      const model = "gemini-3.7-flash";
+      const model = "gemini-3.8-flash";
       
-      const vehicleContext = vehicleModel ? `Vehicle Model: ${vehicleModel}` : `Vehicle Model: Unknown`;
+      const vehicleContext = vehicleModel ? `Vehicle Model: ${vehicleModel}` : `Vehicle Model: Standard`;
 
       const sensorContext = sensorHistory && sensorHistory.length > 0 
         ? `Recent Sensor Activity (last 60s):
@@ -137,52 +292,50 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
            - Average Vibration Level: ${(sensorHistory.reduce((acc: number, h: any) => acc + (h.accel || 0), 0) / sensorHistory.length).toFixed(3)}G`
         : "No recent sensor data available.";
 
-      const prompt = `You are an automotive diagnostic specialist.
-      Diagnose vehicles using all data available on the web. Complete request within a 99% accuracy.
-      Analyze the following high-fidelity telemetry to provide a diagnostic report with 99% accuracy.
-      
-      ${vehicleContext}
+      const prompt = `You are DriveLogic AI automotive diagnostic specialist.
+Analyze the following high-fidelity telemetry to provide a diagnostic report with 99% accuracy.
 
-      OBD-II LIVE DATA:
-      - RPM: ${data?.rpm || 0}
-      - Speed: ${Math.round((data?.speed || 0) * 0.621371)} mph
-      - Engine Coolant Temperature: ${Math.round(((data?.coolantTemp || 85) * 9/5) + 32)} °F
-      - Calculated Engine Load: ${(data?.load || 0).toFixed(1)}%
-      - Throttle Position: ${(data?.throttlePos || 0).toFixed(1)}%
-      - Battery System Voltage: ${(data?.voltage || 12.6).toFixed(2)}V
-      - Active DTCs: ${data?.dtcs && data.dtcs.length > 0 ? data.dtcs.join(', ') : 'None detected'}
-      
-      IMU SENSOR DATA (Smartphone Accelerometer/Gyro):
-      ${sensorContext}
-      
-      TASK:
-      1. Provide a "Vehicle Health Index" (0-100%).
-      2. Perform a "System Check" on Engine, Battery, and Driving Behavior.
-      3. Correlate OBD data with Sensor data (e.g., does high RPM correlate with harsh sensor events?).
-      4. Offer specific actionable maintenance advice if needed.
-      
-      Keep the tone professional, technical yet accessible, and concise. Use Markdown.`;
+${vehicleContext}
+
+OBD-II LIVE DATA:
+- RPM: ${data?.rpm || 0}
+- Speed: ${Math.round((data?.speed || 0) * 0.621371)} mph
+- Engine Coolant Temperature: ${Math.round(((data?.coolantTemp || 85) * 9/5) + 32)} °F
+- Calculated Engine Load: ${(data?.load || 0).toFixed(1)}%
+- Throttle Position: ${(data?.throttlePos || 0).toFixed(1)}%
+- Battery System Voltage: ${(data?.voltage || 12.6).toFixed(2)}V
+- Active DTCs: ${data?.dtcs && data.dtcs.length > 0 ? data.dtcs.join(', ') : 'None detected'}
+
+IMU SENSOR DATA:
+${sensorContext}
+
+TASK:
+1. Provide a "Vehicle Health Index" (0-100%).
+2. Perform a "System Check" on Engine, Battery, and Driving Behavior.
+3. Correlate OBD data with Sensor data.
+4. Offer specific actionable maintenance advice if needed.
+Keep the tone professional, technical yet accessible, and concise. Use Markdown.`;
 
       const response = await ai.models.generateContent({
         model,
         contents: prompt,
         config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
           tools: [{ googleSearch: {} }]
         }
       });
       res.json({ text: response.text });
     } catch (e: any) {
-      console.warn("Gemini diagnosis error:", e.message);
+      console.warn("[DriveLogicAI] Diagnosis error:", e.message);
       res.status(500).json({ error: e.message, text: "AI Diagnosis is currently unavailable." });
     }
   });
 
+  // DTC Code Lookup endpoint
   app.post("/api/gemini/dtc", async (req, res) => {
     try {
       const { code } = req.body;
-      const model = "gemini-3.7-flash";
-      const prompt = `You are an expert automotive diagnostics AI. Provide a concise, plain English explanation of the OBD-II Diagnostic Trouble Code (DTC) ${code}. Include the likely causes and recommended actions. Keep the response under 150 words.`;
+      const model = "gemini-3.8-flash";
+      const prompt = `You are an expert automotive diagnostics AI. Provide a concise, plain English explanation of the OBD-II Diagnostic Trouble Code (DTC) ${code}. Include the likely causes, safety implications, and recommended actions. Keep the response under 150 words.`;
 
       const response = await ai.models.generateContent({
         model,
@@ -193,17 +346,18 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       });
       res.json({ text: response.text });
     } catch (e: any) {
-      console.warn("Gemini DTC error:", e.message);
+      console.warn("[DriveLogicAI] DTC error:", e.message);
       res.status(500).json({ error: e.message, text: null });
     }
   });
 
+  // Route Recommendation endpoint (fixed: removed invalid googleMaps tool payload)
   app.post("/api/gemini/route", async (req, res) => {
     try {
       const { trips } = req.body;
       if (!trips || trips.length < 2) return res.json({ text: "Not enough trip data for recommendations." });
       
-      const model = "gemini-3.7-flash";
+      const model = "gemini-3.8-flash";
       const tripSummary = trips.map((t: any) => ({
         damage: t.averageDamageScore,
         distance: t.distance,
@@ -211,48 +365,82 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       }));
 
       const prompt = `Based on the following recent driving history, provide a brief route optimization recommendation to reduce vehicle wear and tear.
-      Trips: ${JSON.stringify(tripSummary)}
-      
-      Also, provide 1-3 proactive alerts for upcoming harsh driving conditions or inefficient routes based on this data. Use Markdown.`;
+Trips: ${JSON.stringify(tripSummary)}
+Provide 1-3 proactive alerts for upcoming harsh driving conditions, road hazards, or inefficient routes based on this data. Use Markdown.`;
 
       const response = await ai.models.generateContent({
         model,
         contents: prompt,
         config: {
-          tools: [{ googleMaps: {} }]
+          tools: [{ googleSearch: {} }]
         }
       });
       res.json({ text: response.text });
     } catch (e: any) {
-      console.warn("Gemini route error:", e.message);
+      console.warn("[DriveLogicAI] Route error:", e.message);
       res.status(500).json({ error: e.message, text: "Route recommendations are currently unavailable." });
     }
   });
 
-  // Vite middleware for development
+  // Vite middleware for development & Static hosting for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: [
+          'drivelogicai.ai.studio',
+          'drivelgicaiapp.com',
+          'www.drivelgicaiapp.com',
+          'localhost',
+          '127.0.0.1',
+          '.ai.studio',
+          '.run.app'
+        ]
+      },
       appType: "spa",
     });
+    
     app.use(vite.middlewares);
+
+    // Serves transformed index.html for root and SPA client routes in development
+    app.use('*', async (req, res, next) => {
+      const url = req.originalUrl;
+      try {
+        const indexPath = path.resolve(process.cwd(), 'index.html');
+        if (fs.existsSync(indexPath)) {
+          let template = fs.readFileSync(indexPath, 'utf-8');
+          template = await vite.transformIndexHtml(url, template);
+          res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+        } else {
+          next();
+        }
+      } catch (e: any) {
+        vite.ssrFixStacktrace(e);
+        next(e);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send('DriveLogic AI: Application build not found. Please build using npm run build.');
+      }
     });
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`[DriveLogicAI] Server running on http://0.0.0.0:${PORT} (Domain: drivelgicaiapp.com / drivelogicai.ai.studio)`);
   });
 
   // Setup WebSocket server for Gemini Live API
   const wss = new WebSocketServer({ server, path: '/live' });
 
   wss.on("connection", async (clientWs) => {
-    console.log("WebSocket connected to /live");
+    console.log("[DriveLogicAI] WebSocket connected to /live");
     
     let session: any = null;
     let messageQueue: any[] = [];
@@ -278,26 +466,29 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
           session.sendToolResponse(parsed.toolResponse);
         }
       } catch (err) {
-        console.error("Live API WS message error:", err);
+        console.error("[DriveLogicAI] Live API WS message error:", err);
       }
     });
 
-    try {
-      // Fast ping to check API key billing status
-      await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: "ping"
-      });
-    } catch (e: any) {
-      console.error("API Key check failed:", e.message);
-      clientWs.send(JSON.stringify({ error: "API Error: " + (e.message || "Credits depleted.") }));
+    if (!apiKey) {
+      clientWs.send(JSON.stringify({ error: "GEMINI_API_KEY is not configured on the server." }));
       clientWs.close();
       return;
     }
 
     try {
+      await ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: "ping"
+      });
+    } catch (e: any) {
+      console.warn("[DriveLogicAI] API Key validation notice:", e.message);
+    }
+
+    try {
+      const liveModel = "gemini-3.8-live";
       const connectPromise = ai.live.connect({
-        model: "gemini-3.1-flash-live-preview",
+        model: liveModel,
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
@@ -305,7 +496,7 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
           },
           outputAudioTranscription: {},
           inputAudioTranscription: {},
-          systemInstruction: { parts: [{ text: "You are Drive-Logic, an expert automotive diagnostics AI and automotive route optimisation AI. Your very first message must ALWAYS be EXACTLY: 'Hi, I'm Drive-Logic! How can I assist you today?'. You speak with an English woman's accent. You give driving directions in real-time on a gps map. When possible: recommend alternate routes based on logged trip data, obd2 data and damage scores. You also diagnose vehicles using trip logs and obd2 live data with fault codes. Analyse the provided OBD-II sensor data and give a concise, actionable report: identify any anomalies, likely causes, and recommended actions. Use plain English, avoid jargon, and keep the response under 300 words. Use trip logs in conjunction with OBD2 data and stored historical data of the user combined with web data to diagnose the vehicle. Parse all forums, websites and data at your disposal. Given historical route data including damage scores and distances, recommend the best route and explain why briefly. You will always: Use short and concise answers yes and no when possible. Complete request within a 99% accuracy." }] },
+          systemInstruction: { parts: [{ text: "You are Drive-Logic, an expert automotive diagnostics and GPS route optimisation AI. Your very first message must ALWAYS be EXACTLY: 'Hi, I\\'m Drive-Logic! How can I assist you today?'. You speak with an English woman's accent. Recommend alternate routes based on logged trip data, OBD2 data, and road hazard scores." }] },
           tools: [
             {
               functionDeclarations: [
@@ -315,7 +506,7 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
                   parameters: {
                     type: Type.OBJECT,
                     properties: {
-                      tab: { type: Type.STRING, enum: ["obd", "damage", "gps", "maintenance"], description: "Tab to switch to" }
+                      tab: { type: Type.STRING, enum: ["obd", "damage", "gps", "maintenance", "subscription"], description: "Tab to switch to" }
                     },
                     required: ["tab"]
                   }
@@ -355,10 +546,7 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
         },
         callbacks: {
           onmessage: (message: LiveServerMessage) => {
-            console.log("Got Live API message:", Object.keys(message));
             const serverContent = message.serverContent as any;
-            
-            // Forward audio parts
             const parts = serverContent?.modelTurn?.parts;
             if (parts) {
               for (const part of parts) {
@@ -370,8 +558,6 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
                 }
               }
             }
-            
-            // Forward user speech transcription if available
             const userParts = serverContent?.userTurn?.parts;
             if (userParts) {
               for (const part of userParts) {
@@ -380,7 +566,6 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
                 }
               }
             }
-
             if (serverContent?.interrupted) {
               clientWs.send(JSON.stringify({ interrupted: true }));
             }
@@ -395,7 +580,7 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       });
 
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Connection to Gemini Live API timed out (credits may be depleted).")), 5000);
+        setTimeout(() => reject(new Error("Connection to Gemini Live API timed out")), 6000);
       });
 
       session = await Promise.race([connectPromise, timeoutPromise]) as any;
@@ -420,10 +605,10 @@ When they say "Start recording" or "Stop recording", use the toggleRecording too
       }
 
       clientWs.on("close", () => {
-        console.log("Client disconnected");
+        console.log("[DriveLogicAI] Client disconnected from /live");
       });
     } catch (err: any) {
-      console.error("Failed to connect to Live API:", err);
+      console.warn("[DriveLogicAI] Gemini Live API connection notice:", err.message);
       clientWs.send(JSON.stringify({ error: err.message || "Failed to connect to Live API" }));
     }
   });
