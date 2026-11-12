@@ -399,30 +399,13 @@ Provide 1-3 proactive alerts for upcoming harsh driving conditions, road hazards
       },
       appType: "spa",
     });
-    
+    // appType "spa" makes Vite serve (and transform) index.html for client-side routes.
     app.use(vite.middlewares);
-
-    // Serves transformed index.html for root and SPA client routes in development
-    app.use('*', async (req, res, next) => {
-      const url = req.originalUrl;
-      try {
-        const indexPath = path.resolve(process.cwd(), 'index.html');
-        if (fs.existsSync(indexPath)) {
-          let template = fs.readFileSync(indexPath, 'utf-8');
-          template = await vite.transformIndexHtml(url, template);
-          res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
-        } else {
-          next();
-        }
-      } catch (e: any) {
-        vite.ssrFixStacktrace(e);
-        next(e);
-      }
-    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    // Express 5 (path-to-regexp v8) rejects a bare '*' route; '/{*splat}' is the v5 catch-all.
+    app.get('/{*splat}', (req, res) => {
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
