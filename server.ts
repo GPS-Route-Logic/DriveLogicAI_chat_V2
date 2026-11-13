@@ -404,8 +404,8 @@ Provide 1-3 proactive alerts for upcoming harsh driving conditions, road hazards
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    // Express 5 (path-to-regexp v8) rejects a bare '*' route; '/{*splat}' is the v5 catch-all.
-    app.get('/{*splat}', (req, res) => {
+    // Catch-all SPA handler compliant with Express 4 & 5
+    app.use((req, res) => {
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);

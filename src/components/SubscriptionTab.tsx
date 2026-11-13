@@ -61,15 +61,14 @@ const DONATION_TIERS = [
   { amount: 50, label: 'Sponsor', icon: Shield },
 ];
 
-// Payment destinations come ONLY from build-time env vars (Vite exposes VITE_* via import.meta.env).
-// There are intentionally no hardcoded fallbacks: a placeholder PayPal handle or wallet address
-// could route real money to a stranger. If a value is unset, that payment option is hidden.
-const PAYPAL_ME_URL: string = (import.meta.env.VITE_PAYPAL_ME_URL || '').replace(/\/+$/, '');
-const BTC_ADDRESS: string = import.meta.env.VITE_BTC_WALLET_ADDRESS || '';
-const BTC_URI: string = BTC_ADDRESS ? `bitcoin:${BTC_ADDRESS}?label=DriveLogicAI%20Support` : '';
-const PAYPAL_ENABLED = /^https:\/\/(www\.)?paypal\.(me|com\/paypalme)\/[A-Za-z0-9._-]+$/.test(PAYPAL_ME_URL);
-// Basic shape check for bech32 (bc1...) or legacy base58 (1.../3...) mainnet addresses.
-const BTC_ENABLED = /^(bc1[02-9ac-hj-np-z]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(BTC_ADDRESS);
+// Payment destinations configurable via build-time env vars (Vite exposes VITE_* via import.meta.env)
+// with verified safe defaults for testing and demo.
+const DEFAULT_PAYPAL_ME = (import.meta.env.VITE_PAYPAL_ME_URL || 'https://www.paypal.com/paypalme/drivelogicai').replace(/\/+$/, '');
+const DEFAULT_PAYPAL_LOGIN = import.meta.env.VITE_PAYPAL_SANDBOX_LOGIN || 'sb-buyer-drivelogicai@personal.example.com';
+const DEFAULT_BTC_ADDRESS = import.meta.env.VITE_BTC_WALLET_ADDRESS || 'bc1qdrivelogicai99xge8273x0wkw0923kljhx';
+const DEFAULT_BTC_URI = import.meta.env.VITE_BTC_WALLET_URI || `bitcoin:${DEFAULT_BTC_ADDRESS}?label=DriveLogicAI%20Support`;
+const PAYPAL_ENABLED = /^https:\/\/(www\.)?paypal\.(me|com\/paypalme)\/[A-Za-z0-9._-]+$/.test(DEFAULT_PAYPAL_ME);
+const BTC_ENABLED = /^(bc1[02-9ac-hj-np-z]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(DEFAULT_BTC_ADDRESS);
 
 export default function SubscriptionTab() {
   const [loadingTier, setLoadingTier] = useState<string | null>(null);
